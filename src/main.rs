@@ -46,12 +46,13 @@ fn main() -> ExitCode {
 
 fn actual_main(mut cli_app: RustReplay) -> Result<()> {
     let mut ret = false;
+
+    let dir = cli_app.directory.unwrap();
     
     // Run function(s) based on the sub(sub)command to be executed
     match cli_app.subcommand {
         SubCommands::List { verbose, markdown } => {
-            let dir = "/home/chum/.local/share/Steam/steamapps/compatdata/252950/pfx/drive_c/users/steamuser/AppData/Roaming/bakkesmod/bakkesmod/data/replays";
-
+            /* Grab the paths of each replay file */
             let paths = get_dir_files(dir, vec!["replay"]).unwrap();
 
             /* Create a progress bar */
@@ -158,7 +159,7 @@ fn parse_rl(data: &[u8]) -> Result<Replay, ParseError> {
         .parse()
 }
 
-fn get_dir_files(dir: &str, exts: Vec<&str>) -> Result<Vec<PathBuf>, Box<dyn Error>> {
+fn get_dir_files(dir: PathBuf, exts: Vec<&str>) -> Result<Vec<PathBuf>, Box<dyn Error>> {
     /* Read directory entries */
     let mut paths = fs::read_dir(dir)?
         /* Filter out directory entries which couldn't be read */

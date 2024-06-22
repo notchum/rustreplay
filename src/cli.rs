@@ -1,6 +1,7 @@
 
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueHint};
+use std::path::PathBuf;
 
 #[derive(Parser)]
 #[clap(author, version, about)]
@@ -8,6 +9,10 @@ use clap::{Parser, Subcommand};
 pub struct RustReplay {
     #[clap(subcommand)]
     pub subcommand: SubCommands,
+    /// Set the directory to read the replay files from.
+    #[clap(long, short)]
+    #[clap(value_hint(ValueHint::FilePath))]
+    pub directory: Option<PathBuf>,
 }
 
 #[derive(Subcommand)]
