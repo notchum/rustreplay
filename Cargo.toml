@@ -1,0 +1,11 @@
+[package]
+name = "rustreplay"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+clap = { version = "4.5.7", features = ["derive"] }
+colored = "2.1"
+anyhow = "1.0"
+boxcars = "0.9.13"
+serde_json = "1.0"
