@@ -5,12 +5,13 @@ use boxcars::{ParseError, Replay, HeaderProp};
 use clap::{Parser};
 use cli::{RustReplay, SubCommands};
 use colored::{ColoredString, Colorize};
+use indicatif::ProgressBar;
 use serde_json::json;
 use std::{
-    fs,
-    fs::Metadata,
+    error::Error,
+    fs::{self, Metadata},
     io::{self, Read},
-    path::Path,
+    path::PathBuf,
     process::ExitCode,
 };
 
@@ -50,26 +51,17 @@ fn actual_main(mut cli_app: RustReplay) -> Result<()> {
     match cli_app.subcommand {
         SubCommands::List { verbose, markdown } => {
             let dir = "/home/chum/.local/share/Steam/steamapps/compatdata/252950/pfx/drive_c/users/steamuser/AppData/Roaming/bakkesmod/bakkesmod/data/replays";
-            // let paths = fs::read_dir(dir).unwrap();
 
-            /* Read directory entries */
-            let mut paths= fs::read_dir(dir)?
-                .map(|res| res.map(|entry| entry.path()))
-                .collect::<Result<Vec<_>, io::Error>>()?;
+            let paths = get_dir_files(dir, vec!["replay"]).unwrap();
 
-            /* Sort paths by modification time (newest to oldest) */
-            paths.sort_by(|a, b| {
-                let metadata_a = fs::metadata(a).unwrap();
-                let metadata_b = fs::metadata(b).unwrap();
-                
-                /* Compare modification times (descending order) */
-                metadata_b.modified().unwrap().cmp(&metadata_a.modified().unwrap())
-            });
+            /* Create a progress bar */
+            println!("Parsing replay files...");
+            let pb = ProgressBar::new(paths.len().try_into().unwrap());
 
             for (i, path) in paths.iter().enumerate() {
                 /* Extract the name of the file from the path */
                 let name = path.file_stem().and_then(|s| s.to_str()).unwrap();
-                println!("{}. {:?}", i, name);
+                // println!("{}. {:?}", i, name);
                 
                 /* Attempt to read the entire file into a buffer */
                 let buffer = fs::read(path.as_path())?;
@@ -100,21 +92,25 @@ fn actual_main(mut cli_app: RustReplay) -> Result<()> {
                         // Calculate raw seconds if both RecordFPS and NumFrames are available
                         if let (Some(record_fps), Some(num_frames)) = (record_fps, num_frames) {
                             let raw_seconds = num_frames as f32 / record_fps;
-                            println!("Raw seconds: {}", raw_seconds);
+                            // println!("Raw seconds: {}", raw_seconds);
                         } else {
-                            println!("Unable to calculate raw seconds. Missing RecordFPS or NumFrames.");
+                            // println!("Unable to calculate raw seconds. Missing RecordFPS or NumFrames.");
                         }
                     },
                     Err(err) => {
                         // Handle the parsing error
-                        eprintln!("Error parsing replay: {}", err);
+                        // eprintln!("Error parsing replay: {}", err);
                     }
                 }    
 
                 // let obj = json!(&replay);
                 // println!("{}", serde_json::to_string_pretty(&obj).unwrap());
                 // break;
+                pb.inc(1);
             }
+
+            pb.finish_with_message("Finished parsing replays!");
+
             // let profile = get_active_profile(&mut config)?;
             // check_empty_profile(profile)?;
             // if verbose {
@@ -160,4 +156,33 @@ fn parse_rl(data: &[u8]) -> Result<Replay, ParseError> {
     boxcars::ParserBuilder::new(data)
         .must_parse_network_data()
         .parse()
+}
+
+fn get_dir_files(dir: &str, exts: Vec<&str>) -> Result<Vec<PathBuf>, Box<dyn Error>> {
+    /* Read directory entries */
+    let mut paths = fs::read_dir(dir)?
+        /* Filter out directory entries which couldn't be read */
+        .filter_map(|res| res.ok())
+        /* Map the directory entries to paths */
+        .map(|dir_entry| dir_entry.path())
+        /* Filter out paths based on extensions in `exts`, if `exts` is not empty */
+        .filter(|path| {
+            if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                exts.is_empty() || exts.contains(&ext)
+            } else {
+                exts.is_empty() // Include files without extensions if `exts` is empty
+            }
+        })
+        .collect::<Vec<_>>();
+
+    /* Sort paths by modification time (newest to oldest) */
+    paths.sort_by(|a, b| {
+        let metadata_a = fs::metadata(a).unwrap();
+        let metadata_b = fs::metadata(b).unwrap();
+        
+        /* Compare modification times (descending order) */
+        metadata_b.modified().unwrap().cmp(&metadata_a.modified().unwrap())
+    });
+
+    Ok(paths)
 }
