@@ -3,11 +3,9 @@ mod tui;
 mod models;
 
 use anyhow::{anyhow, bail, ensure, Result};
-use boxcars::{ParseError, Replay, HeaderProp};
 use clap::{Parser};
 use cli::{RustReplay, SubCommands};
 use crossterm::event::{self, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind};
-use indicatif::ProgressBar;
 use models::ReplayFile;
 use ratatui::{
     prelude::*,
@@ -20,21 +18,39 @@ use std::{
     fs::{self, Metadata},
     io::{self, Read},
     path::PathBuf,
-    process::ExitCode,
+    time::Duration,
 };
 
 #[derive(Debug, Default)]
 pub struct App {
     replay_dir: PathBuf,
     replay_files: Vec<ReplayFile>,
-    exit: bool,
+    parsing_paths: Vec<PathBuf>,
+    parsing_index: usize,
+    parsing_progress: f64,
+    state: AppState,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum AppState {
+    #[default]
+    Browsing,
+    Parsing,
+    Quitting,
 }
 
 impl App {
     /// runs the application's main loop until the user quits
     pub fn run(&mut self, terminal: &mut tui::Tui, replay_dir: PathBuf) -> io::Result<()> {
         self.replay_dir = replay_dir;
-        while !self.exit {
+        self.initialize_parse(); // begin parsing on startup
+        
+        while self.state != AppState::Quitting {
+            match self.state {
+                AppState::Browsing => {}, //TODO
+                AppState::Parsing => self.step_parse(),
+                _ => {}
+            }
             terminal.draw(|frame| self.render_frame(frame))?;
             self.handle_events()?;
         }
@@ -46,57 +62,55 @@ impl App {
     }
 
     fn handle_events(&mut self) -> io::Result<()> {
-        match event::read()? {
-            // it's important to check that the event is a key press event as
-            // crossterm also emits key release and repeat events on Windows.
-            Event::Key(key_event) if key_event.kind == KeyEventKind::Press => {
-                self.handle_key_event(key_event)
+        let timeout = Duration::from_secs_f32(1.0 / 20.0);
+        if event::poll(timeout)? {
+            if let Event::Key(key) = event::read()? {
+                if key.kind == KeyEventKind::Press {
+                    use KeyCode::*;
+                    match key.code {
+                        Char(' ') | Enter => self.initialize_parse(),
+                        Char('q') | Esc => self.quit(),
+                        _ => {}
+                    }
+                }
             }
-            _ => {}
-        };
+        }
         Ok(())
     }
 
-    fn handle_key_event(&mut self, key_event: KeyEvent) {
-        match key_event.code {
-            KeyCode::Char('q') => self.exit(),
-            KeyCode::Up => self.list(),
-            _ => {}
-        }
+    fn quit(&mut self) {
+        self.state = AppState::Quitting;
     }
 
-    fn exit(&mut self) {
-        self.exit = true;
+    fn initialize_parse(&mut self) {
+        self.parsing_paths = get_dir_files(&self.replay_dir, vec!["replay"]).unwrap();
+        self.parsing_index = 0;
+        self.parsing_progress = 0.0;
+        self.state = AppState::Parsing;
     }
 
-    fn list(&mut self) {
-        /* Grab the paths of each replay file */
-        let paths = get_dir_files(&self.replay_dir, vec!["replay"]).unwrap();
-
-        /* Create a progress bar */
-        // println!("Parsing replay files...");
-        // let pb = ProgressBar::new(paths.len().try_into().unwrap());
-
-        for (i, path) in paths.iter().enumerate() {
-            /* Extract the name of the file from the path */
-            let name = path.file_stem().and_then(|s| s.to_str()).unwrap();
-            // println!("{}. {:?}", i, name);
-
-            /* Create the replay file */
-            let mut rf = models::ReplayFile::new(name.to_owned(), path.to_path_buf());
-            
-            /* Parse the replay */
-            rf.parse_replay();
-
-            self.replay_files.push(rf);
-
-            // let obj = json!(&replay);
-            // println!("{}", serde_json::to_string_pretty(&obj).unwrap());
-            // break;
-            // pb.inc(1);
+    fn step_parse(&mut self) {
+        if self.parsing_index == ( self.parsing_paths.len() - 1 ) {
+            self.finalize_parse();
+            return;
         }
 
-        // pb.finish_with_message("Finished parsing replays!");
+        let path = &self.parsing_paths[self.parsing_index];
+        let name = path.file_stem().and_then(|s| s.to_str()).unwrap();
+        let mut rf = models::ReplayFile::new(name.to_owned(), path.to_path_buf());
+        rf.parse_replay();
+        self.replay_files.push(rf);
+
+        let total_files = self.parsing_paths.len();
+        self.parsing_index += 1;
+        self.parsing_progress = self.parsing_index as f64 / total_files as f64;
+    }
+
+    fn finalize_parse(&mut self) {
+        self.parsing_paths.clear();
+        self.parsing_index = 0;
+        self.parsing_progress = 0.0;
+        self.state = AppState::Browsing;
     }
 }
 
@@ -105,8 +119,8 @@ impl Widget for &App {
         let title = Title::from(" RustReplay ".bold());
         
         let instructions = Title::from(Line::from(vec![
-            " List ".into(),
-            "<Up>".blue().bold(),
+            " Parse Replays ".into(),
+            "<Space/Enter>".blue().bold(),
             " Quit ".into(),
             "<Q> ".blue().bold(),
         ]));
@@ -121,23 +135,49 @@ impl Widget for &App {
             .borders(Borders::ALL)
             .border_set(border::THICK);
 
-        let items: Vec<ListItem> = self.replay_files.iter()
-            .map(|rf| {
-                let mut item = ListItem::new(rf.name.clone());
-                if rf.corrupt {
-                    item = item.style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD));
-                }
-                item
-            })
-            .collect();
+        if self.state == AppState::Parsing {
+            let total_files = self.parsing_paths.len();
+            
+            let progress_text = format!(
+                "Parsing replays... {}/{}",
+                (self.parsing_progress * total_files as f64) as usize,
+                total_files
+            );
 
-        let list = List::new(items)
-            .block(block)
-            .highlight_style(Style::new().add_modifier(Modifier::REVERSED))
-            .highlight_symbol(">>")
-            .repeat_highlight_symbol(true);
+            let gauge = LineGauge::default()
+                .block(Block::default().borders(Borders::ALL).title("Progress"))
+                .gauge_style(Style::default().fg(Color::Cyan))
+                .ratio(self.parsing_progress);
 
-        Widget::render(list, area, buf);
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(3), Constraint::Min(1)])
+                .split(area);
+
+            Paragraph::new(progress_text)
+                .alignment(Alignment::Center)
+                .render(chunks[0], buf);
+
+            gauge.render(chunks[1], buf);
+        } else {
+            let items: Vec<ListItem> = self.replay_files.iter()
+                .map(|rf| {
+                    let mut item = ListItem::new(rf.name.clone());
+                    if rf.corrupt {
+                        item = item.style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD));
+                    }
+                    item
+                })
+                .collect();
+
+            let list = List::new(items)
+                .block(block)
+                .highlight_style(Style::new().add_modifier(Modifier::REVERSED))
+                .highlight_symbol(">>")
+                .repeat_highlight_symbol(true);
+            
+            Widget::render(list, area, buf);
+        }
     }
 }
 
